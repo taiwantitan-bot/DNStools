@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DNS 多人隱私工具 (修正版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js" crossorigin="anonymous"></script>
+    <style>
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        .controls { padding: 15px; display: flex; justify-content: center; gap: 10px; background: #222; z-index: 10; border-bottom: 1px solid #444; }
+        #container { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; }
+        video, canvas { position: absolute; max-width: 100%; max-height: 100%; object-fit: contain; }
+        button { padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 8px; border: none; cursor: pointer; }
+        #btn-cat { background: #FFD700; color: black; }
+        #btn-cat.active { background: #4CAF50; color: white; }
+        #btn-photo { background: #FF4757; color: white; }
+        #msg { position: absolute; bottom: 20px; background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 20px; font-size: 13px; z-index: 20; color: #00FF00; text-align: center; max-width: 80%; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button id="btn-cat">開啟遮蓋</button>
+        <button id="btn-photo">拍照</button>
+    </div>
+
+    <div id="container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="msg">正在下載 AI 模型...</div>
+    </div>
+
+    <script type="module">
+        import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js";
+
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("output_canvas");
+        const ctx = canvas.getContext("2d");
+        const msg = document.getElementById("msg");
+        const btnCat = document.getElementById("btn-cat");
+
+        let poseLandmarker;
+        let isCatMode = false;
+        let lastVideoTime = -1;
+        let smoothedHeads = []; 
+        const LERP_FACTOR = 0.25; 
+
+        async function init() {
+            try {
+                // 1. 設定資源解析器
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
+                );
+
+                // 2. 建立偵測器 (修正後的正確路徑)
+                poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numPoses: 2 
+                });
+                
+                msg.innerText = "模型載入成功，啟動相機中...";
+                startCamera();
+            } catch (e) {
+                // 顯示詳細錯誤，方便排錯
+                msg.style.color = "#ff4757";
+                msg.innerText = "初始化失敗: " + e.message;
+                console.error(e);
+            }
+        }
+
+        async function startCamera() {
+            try {
+                const constraints = { video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } } };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                video.onloadeddata = () => {
+                    msg.style.color = "#00FF00";
+                    msg.innerText = "DNS 多人模式已就緒";
+                    predictWebcam();
+                };
+            } catch (e) {
+                msg.innerText = "相機啟動失敗，請檢查權限或 HTTPS";
+            }
+        }
+
+        function lerp(start, end, factor) {
+            return start + (end - start) * factor;
+        }
+
+        async function predictWebcam() {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                const result = poseLandmarker.detectForVideo(video, performance.now());
+
+                smoothedHeads.forEach(h => h.updated = false);
+
+                if (result.landmarks && result.landmarks.length > 0) {
+                    result.landmarks.forEach((landmarks, index) => {
+                        const nose = landmarks[0];
+                        const leftShoulder = landmarks[11];
+                        const rightShoulder = landmarks[12];
+
+                        // 計算頭部中心
+                        const targetX = nose.x * canvas.width;
+                        const targetY = (nose.y * canvas.height) - (Math.abs(leftShoulder.y - rightShoulder.y) * canvas.height * 0.2);
+                        const targetSize = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width * 1.3;
+
+                        if (!smoothedHeads[index]) {
+                            smoothedHeads[index] = { x: targetX, y: targetY, size: targetSize, updated: true };
+                        } else {
+                            smoothedHeads[index].x = lerp(smoothedHeads[index].x, targetX, LERP_FACTOR);
+                            smoothedHeads[index].y = lerp(smoothedHeads[index].y, targetY, LERP_FACTOR);
+                            smoothedHeads[index].size = lerp(smoothedHeads[index].size, targetSize, LERP_FACTOR);
+                            smoothedHeads[index].updated = true;
+                        }
+                    });
+                }
+
+                smoothedHeads = smoothedHeads.filter(h => h.updated);
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                smoothedHeads.forEach(head => {
+                    if (isCatMode) {
+                        const fontSize = Math.max(head.size, 40);
+                        ctx.font = `${fontSize}px serif`;
+                        ctx.textAlign = "center";
+                        ctx.textBaseline = "middle";
+                        ctx.fillText("🐱", head.x, head.y);
+                    } else {
+                        ctx.beginPath();
+                        ctx.arc(head.x, head.y, 8, 0, Math.PI * 2);
+                        ctx.fillStyle = "rgba(0, 255, 0, 0.6)";
+                        ctx.fill();
+                    }
+                });
+            }
+            window.requestAnimationFrame(predictWebcam);
+        }
+
+        btnCat.onclick = () => {
+            isCatMode = !isCatMode;
+            btnCat.innerText = isCatMode ? "停止遮蓋" : "開啟遮蓋";
+            btnCat.classList.toggle('active', isCatMode);
+        };
+
+        document.getElementById("btn-photo").onclick = () => {
+            msg.innerText = "拍照中...";
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tCtx = tempCanvas.getContext("2d");
+            tCtx.drawImage(video, 0, 0);
+            tCtx.drawImage(canvas, 0, 0);
+
+            const link = document.createElement("a");
+            link.download = `DNS_Multi_${Date.now()}.png`;
+            link.href = tempCanvas.toDataURL("image/png");
+            link.click();
+            setTimeout(() => { msg.innerText = "DNS 多人模式已就緒"; }, 1000);
+        };
+
+        init();
+    </script>
+</body>
+</html>
