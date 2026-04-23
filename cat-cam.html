@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DNS 臨床拍攝工具 - 隱私保護版</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js" crossorigin="anonymous"></script>
+    <style>
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        .controls { padding: 15px; display: flex; justify-content: center; gap: 10px; background: #222; z-index: 10; border-bottom: 1px solid #444; }
+        #container { position: relative; flex: 1; display: flex; justify-content: center; align-items: center; }
+        video, canvas { position: absolute; max-width: 100%; max-height: 100%; object-fit: contain; }
+        button { padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 8px; border: none; cursor: pointer; }
+        #btn-cat { background: #FFD700; color: black; }
+        #btn-cat.active { background: #4CAF50; color: white; }
+        #btn-photo { background: #FF4757; color: white; }
+        #msg { position: absolute; bottom: 20px; background: rgba(0,0,0,0.7); padding: 5px 15px; border-radius: 20px; font-size: 13px; z-index: 20; color: #00FF00; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <button id="btn-cat">開啟隱私遮蓋</button>
+        <button id="btn-photo">拍照</button>
+    </div>
+
+    <div id="container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="msg">DNS 模式初始化中...</div>
+    </div>
+
+    <script type="module">
+        import { PoseLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.js";
+
+        const video = document.getElementById("webcam");
+        const canvas = document.getElementById("output_canvas");
+        const ctx = canvas.getContext("2d");
+        const msg = document.getElementById("msg");
+        const btnCat = document.getElementById("btn-cat");
+
+        let poseLandmarker;
+        let isCatMode = false;
+        let lastVideoTime = -1;
+        
+        // 平滑化參數 (用於 DNS 全身拍攝，係數調小一點更穩)
+        let smoothedHead = { x: 0, y: 0, size: 0, active: false };
+        const LERP_FACTOR = 0.25; 
+
+        async function init() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm");
+                poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numPoses: 1
+                });
+                startCamera();
+            } catch (e) {
+                msg.innerText = "初始化失敗";
+            }
+        }
+
+        async function startCamera() {
+            const constraints = { video: { facingMode: "environment", width: 1280, height: 720 } };
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            video.srcObject = stream;
+            video.onloadeddata = () => {
+                msg.innerText = "DNS 模式已就緒";
+                predictWebcam();
+            };
+        }
+
+        function lerp(start, end, factor) {
+            return start + (end - start) * factor;
+        }
+
+        async function predictWebcam() {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                const result = poseLandmarker.detectForVideo(video, performance.now());
+
+                if (result.landmarks && result.landmarks.length > 0) {
+                    const landmarks = result.landmarks[0];
+                    
+                    // 關鍵點定位：利用鼻子(0)、左耳(7)、右耳(8) 算出頭部中心
+                    // 如果是背面，AI 會利用肩膀(11, 12) 預測頭部位置
+                    const nose = landmarks[0];
+                    const leftShoulder = landmarks[11];
+                    const rightShoulder = landmarks[12];
+
+                    // 估算頭部中心與大小
+                    const targetX = nose.x * canvas.width;
+                    const targetY = (nose.y * canvas.height) - (Math.abs(leftShoulder.y - rightShoulder.y) * canvas.height * 0.2);
+                    const targetSize = Math.abs(leftShoulder.x - rightShoulder.x) * canvas.width * 1.2;
+
+                    if (!smoothedHead.active) {
+                        smoothedHead = { x: targetX, y: targetY, size: targetSize, active: true };
+                    } else {
+                        smoothedHead.x = lerp(smoothedHead.x, targetX, LERP_FACTOR);
+                        smoothedHead.y = lerp(smoothedHead.y, targetY, LERP_FACTOR);
+                        smoothedHead.size = lerp(smoothedHead.size, targetSize, LERP_FACTOR);
+                    }
+                } else {
+                    smoothedHead.active = false;
+                }
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (isCatMode && smoothedHead.active) {
+                    const fontSize = Math.max(smoothedHead.size, 50); // 確保最小大小
+                    ctx.font = `${fontSize}px serif`;
+                    ctx.textAlign = "center";
+                    ctx.textBaseline = "middle";
+                    // 繪製貓頭
+                    ctx.fillText("🐱", smoothedHead.x, smoothedHead.y);
+                } else if (!isCatMode && smoothedHead.active) {
+                    // 非遮蓋模式顯示一個淡色標記，確認 AI 有抓到位置
+                    ctx.beginPath();
+                    ctx.arc(smoothedHead.x, smoothedHead.y, 10, 0, Math.PI * 2);
+                    ctx.fillStyle = "rgba(0, 255, 0, 0.5)";
+                    ctx.fill();
+                }
+            }
+            window.requestAnimationFrame(predictWebcam);
+        }
+
+        btnCat.onclick = () => {
+            isCatMode = !isCatMode;
+            btnCat.innerText = isCatMode ? "停止遮蓋" : "開啟隱私遮蓋";
+            btnCat.classList.toggle('active', isCatMode);
+        };
+
+        document.getElementById("btn-photo").onclick = () => {
+            msg.innerText = "拍照中...";
+            const tempCanvas = document.createElement("canvas");
+            tempCanvas.width = canvas.width;
+            tempCanvas.height = canvas.height;
+            const tCtx = tempCanvas.getContext("2d");
+            tCtx.drawImage(video, 0, 0);
+            tCtx.drawImage(canvas, 0, 0);
+
+            const link = document.createElement("a");
+            link.download = `DNS_Record_${Date.now()}.png`;
+            link.href = tempCanvas.toDataURL("image/png");
+            link.click();
+            setTimeout(() => { msg.innerText = "DNS 模式已就緒"; }, 1000);
+        };
+
+        init();
+    </script>
+</body>
+</html>
