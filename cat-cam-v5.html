@@ -235,7 +235,7 @@
                 }
 
                 // 3. 安全防線：確保貓咪頭下緣絕對不低於兩肩的最高點（避免壓到 DNS 需要觀察的肩膀線條）
-                const highestShoulderY = ( Math.min(leftShoulder.y, rightShoulder.y) * canvasPreview.height ) - 50;
+                const highestShoulderY = ( Math.min(leftShoulder.y, rightShoulder.y) * canvasPreview.height ) + 50;
                 
                 // 計算貓咪頭左上角的繪製起點
                 const maskX = headX - (maskSize / 2);
