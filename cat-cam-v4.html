@@ -2,8 +2,8 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DNS單人隱私工具 v4</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DNS單人隱私工具 v5</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
@@ -22,20 +22,13 @@
             flex-direction: column;
             align-items: center;
             justify-content: space-between;
-            min-height: 100vh;
+            /* 使用 dvh (Dynamic Viewport Height) 確保在手機瀏覽器完全不超出螢幕 */
+            height: 100vh;
+            height: 100dvh; 
             overflow: hidden;
+            position: relative;
         }
-        header {
-            width: 100%;
-            padding: 15px;
-            text-align: center;
-            background-color: #1e1e1e;
-            font-size: 1.2rem;
-            font-weight: bold;
-            letter-spacing: 1px;
-            border-bottom: 1px solid #333;
-        }
-        /* 相機預視區域容器 */
+        /* 相機預視區域容器：自動填滿除了按鈕以外的所有空間 */
         .camera-container {
             position: relative;
             width: 100%;
@@ -47,22 +40,23 @@
             overflow: hidden;
         }
         video {
-            display: none; /* 隱藏原生video，改用canvas繪製 */
+            display: none; 
         }
         canvas {
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
         }
-        /* 控制面板 */
+        /* 控制面板：緊貼螢幕最下方 */
         .control-panel {
             width: 100%;
-            padding: 20px 15px;
-            background-color: #1e1e1e;
+            padding: 12px 15px env(safe-area-inset-bottom); /* 考慮 iPhone 底部安全區域 */
+            background-color: rgba(30, 30, 30, 0.95);
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 8px;
             border-top: 1px solid #333;
+            z-index: 10;
         }
         .btn-group {
             display: flex;
@@ -71,8 +65,8 @@
         }
         button {
             flex: 1;
-            padding: 15px 10px;
-            font-size: 1rem;
+            padding: 14px 8px;
+            font-size: 0.95rem;
             font-weight: bold;
             border: none;
             border-radius: 8px;
@@ -80,7 +74,7 @@
             transition: background 0.2s;
             -webkit-tap-highlight-color: transparent;
         }
-        /* 按鈕樣式優化 */
+        /* 按鈕樣式 */
         #btn-mask {
             background-color: #555;
             color: white;
@@ -91,7 +85,7 @@
         #btn-capture {
             background-color: #007aff;
             color: white;
-            flex: 1.5; /* 讓拍照按鈕大一點 */
+            flex: 1.3; 
         }
         #btn-clear {
             background-color: #ff3b30;
@@ -103,14 +97,12 @@
         /* 狀態提示 */
         .status-text {
             text-align: center;
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             color: #aaa;
         }
     </style>
 </head>
 <body>
-
-    <header>DNS單人隱私工具 v4</header>
 
     <div class="camera-container">
         <video id="video" playsinline></video>
@@ -139,9 +131,8 @@
         let isMasked = false;
         let faceDetector = null;
         let camera = null;
-        let lastDetections = []; // 暫存偵測結果
 
-        // 1. 產生貓咪頭像的 SVG DataURL（避免外部圖片載入失敗與記憶體洩漏）
+        // 貓咪頭像 SVG DataURL
         const catSvg = `
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
                 <circle cx="50" cy="55" r="40" fill="#fbc02d"/>
@@ -159,7 +150,6 @@
         const catImage = new Image();
         catImage.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(catSvg);
 
-        // 2. 初始化 MediaPipe Face Detection
         async function initFaceDetection() {
             statusDisplay.innerText = "正在初始化相機與辨識模組...";
             
@@ -168,13 +158,12 @@
             });
 
             faceDetector.setOptions({
-                model: 'short', // short 適合近~中距離（全身照的人臉足夠辨識），效能較好
-                minDetectionConfidence: 0.45 // 稍微調低門檻，確保側面也能順利捕捉
+                model: 'short',
+                minDetectionConfidence: 0.45
             });
 
             faceDetector.onResults(onFaceResults);
 
-            // 啟動手機後鏡頭
             camera = new Camera(video, {
                 onFrame: async () => {
                     await faceDetector.send({ image: video });
@@ -184,52 +173,40 @@
             });
             
             camera.start()
-                .then(() => statusDisplay.innerText = "系統就緒，請對準全身照片")
+                .then(() => statusDisplay.innerText = "就緒。請拍攝正面、側面或背面")
                 .catch(err => {
                     statusDisplay.innerText = "無法開啟相機，請檢查權限";
                     console.error(err);
                 });
         }
 
-        // 3. 處理偵測結果並繪製到預覽 Canvas 上
         function onFaceResults(results) {
-            // 動態調整預覽 Canvas 尺寸配合影像
             if (canvasPreview.width !== results.image.width || canvasPreview.height !== results.image.height) {
                 canvasPreview.width = results.image.width;
                 canvasPreview.height = results.image.height;
             }
 
-            // 繪製原始相機畫面
             ctxPreview.drawImage(results.image, 0, 0, canvasPreview.width, canvasPreview.height);
 
-            // 如果開啟遮蔽且有偵測到人臉
             if (isMasked && results.detections && results.detections.length > 0) {
                 results.detections.forEach(detection => {
                     const boundingBox = detection.boundingBox;
                     
-                    // 轉換為 Canvas 實際像素座標
                     const width = boundingBox.width * canvasPreview.width;
                     const height = boundingBox.height * canvasPreview.height;
-                    const x = boundingBox.xCenter * canvasPreview.width - width / 2;
-                    const y = boundingBox.yCenter * canvasPreview.height - height / 2;
-
-                    // 嚴格控制貓咪頭的覆蓋範圍：
-                    // DNS 評估需要完整的肩膀線條，所以我們放大比例時主要「往上」與「往左右」放大，不往下過度延伸
-                    const sizeMultiplier = 1.8; // 放大倍率確保遮住耳朵與頭髮
+                    
+                    const sizeMultiplier = 1.8; 
                     const maskSize = Math.max(width, height) * sizeMultiplier;
                     
-                    // 重新計算置中位置
                     const maskX = (boundingBox.xCenter * canvasPreview.width) - (maskSize / 2);
-                    // 關鍵：將 Y 軸往上提一些（減去 maskSize 的 10%），避免貓咪頭下緣壓到下巴與肩膀
+                    // 核心逻辑：貓頭往上提10%，完整露出肩膀線條與頸椎基底
                     const maskY = (boundingBox.yCenter * canvasPreview.height) - (maskSize / 2) - (maskSize * 0.1);
 
-                    // 繪製貓頭
                     ctxPreview.drawImage(catImage, maskX, maskY, maskSize, maskSize);
                 });
             }
         }
 
-        // 4. 按鈕事件：遮蔽切換
         btnMask.addEventListener('click', () => {
             isMasked = !isMasked;
             if (isMasked) {
@@ -241,62 +218,43 @@
             }
         });
 
-        // 5. 按鈕事件：拍照（嚴格優化記憶體）
         btnCapture.addEventListener('click', () => {
             statusDisplay.innerText = "正在處理照片儲存...";
-            
-            // 建立暫時性的 <a> 標籤進行下載
             const downloadLink = document.createElement('a');
-            
-            // 使用較不佔記憶體的 image/jpeg 格式，並設定 0.9 壓縮比
             const dataUrl = canvasPreview.toDataURL('image/jpeg', 0.9);
             
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             downloadLink.download = `DNS_${timestamp}.jpg`;
             downloadLink.href = dataUrl;
-            
-            // 觸發下載（在手機上會提示儲存至檔案或相簿）
             downloadLink.click();
 
-            statusDisplay.innerText = "照片已匯出！請確認下載提示";
+            statusDisplay.innerText = "照片已匯出！";
 
-            // 【記憶體優化關鍵】立即切斷 Base64 字串引用，強制讓瀏覽器在下一幀釋放記憶體
             setTimeout(() => {
                 downloadLink.remove();
             }, 100);
         });
 
-        // 6. 按鈕事件：清除快取（核心記憶體釋放與優化）
         btnClear.addEventListener('click', () => {
-            statusDisplay.innerText = "正在執行深度快取清理...";
-
+            statusDisplay.innerText = "正在重整釋放記憶體...";
             try {
-                // 1. 清除瀏覽器標準快取與 Service Worker 快取（若有）
                 if ('caches' in window) {
                     caches.keys().then(names => {
                         names.forEach(name => caches.delete(name));
                     });
                 }
-
-                // 2. 清理 HTML Canvas 緩衝區（強制將畫布歸零，迫使 VRAM 釋放）
                 canvasPreview.width = 1;
                 canvasPreview.height = 1;
                 ctxPreview.clearRect(0, 0, 1, 1);
-
-                // 3. 提示使用者重新整理（這是在前端最徹底釋放垃圾回收/避免閃退的方法）
-                statusDisplay.innerText = "快取已清空！頁面即將自動重整以釋放記憶體...";
                 
                 setTimeout(() => {
                     window.location.reload();
-                }, 1000);
-
+                }, 500);
             } catch (error) {
-                console.error("清理快取失敗:", error);
-                statusDisplay.innerText = "清理失敗，請手動重新整理網頁";
+                window.location.reload();
             }
         });
 
-        // 頁面載入後自動啟動
         window.onload = initFaceDetection;
     </script>
 </body>
