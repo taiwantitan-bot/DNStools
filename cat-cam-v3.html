@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DNS 單人隱私工具 (V3)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 80vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+        video {
+            display: none; /* 隱藏原生視訊，改用 Canvas 繪製 */
+        }
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        #control-panel {
+            width: 100vw;
+            height: 20vh;
+            background: rgba(20, 20, 20, 0.95);
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            padding: 15px;
+            align-items: center;
+            justify-items: center;
+            box-shadow: 0 -2px 10px rgba(0,0,0,0.5);
+        }
+        .btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #2a2a2a;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            width: 75px;
+            height: 75px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .btn:active {
+            transform: scale(0.95);
+            background: #3a3a3a;
+        }
+        .btn.active {
+            background: #ff3b30;
+        }
+        .btn svg {
+            width: 28px;
+            height: 28px;
+            margin-bottom: 6px;
+            fill: currentColor;
+        }
+        #clear-btn {
+            background: #4a3b2c;
+            color: #ffb347;
+        }
+        #clear-btn:active {
+            background: #5a4b3c;
+        }
+        #status-toast {
+            position: absolute;
+            top: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="container">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="status-toast">提示訊息</div>
+    </div>
+
+    <div id="control-panel">
+        <button id="mask-btn" class="btn">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H7c0-2.76 2.24-5 5-5s5 2.24 5 5c0 1.04-.42 1.99-1.07 2.75z"/></svg>
+            <span>遮蔽: 關</span>
+        </button>
+
+        <button id="capture-btn" class="btn">
+            <svg viewBox="0 0 24 24"><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>
+            <span>拍照</span>
+        </button>
+<!--
+        <button id="record-btn" class="btn">
+            <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8z"/></svg>
+            <span>錄影</span>
+        </button>
+
+        <button id="clear-btn" class="btn">
+            <svg viewBox="0 0 24 24"><path d="M15 16h4v2h-4zm0-8h7v2h-7zm0 4h6v2h-6zM3 18c0 1.1.9 2 2 2h6c1.1 0 2-.9 2-2V8H3v10zM14 5h-3l-1-1H6L5 5H2v2h12z"/></svg>
+            <span>釋放快取</span>
+        </button>
+-->
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        // UI 控制控制項
+        const maskBtn = document.getElementById('mask-btn');
+        const captureBtn = document.getElementById('capture-btn');
+        const recordBtn = document.getElementById('record-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const toast = document.getElementById('status-toast');
+
+        // 狀態變數
+        let isMaskActive = false;
+        let isRecording = false;
+        let mediaRecorder = null;
+        let recordedChunks = [];
+        let faceDetection = null;
+        let camera = null;
+
+        // 快取陣列（用於儲存拍照與錄影產生的 Blob/URL，以便手動釋放防止當機）
+        let generatedUrls = [];
+
+        // 預載入貓咪遮蔽圖片 (使用 Base64 SVG 以免跨網域與讀取失敗)
+        const catImage = new Image();
+        catImage.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="55" r="40" fill="%23f39c12"/><circle cx="35" cy="45" r="8" fill="white"/><circle cx="35" cy="45" r="4" fill="black"/><circle cx="65" cy="45" r="8" fill="white"/><circle cx="65" cy="45" r="4" fill="black"/><polygon points="50,58 44,52 56,52" fill="%23e74c3c"/><path d="M40,68 Q50,75 60,68" stroke="black" stroke-width="3" fill="none"/><polygon points="15,25 35,35 15,55" fill="%23d35400"/><polygon points="85,25 65,35 85,55" fill="%23d35400"/><path d="M25,55 L5,53 M25,58 L3,60 M75,55 L95,53 M75,58 L97,60" stroke="black" stroke-width="2"/></svg>';
+
+        // 顯示提示訊息
+        function showToast(message) {
+            toast.innerText = message;
+            toast.style.opacity = '1';
+            setTimeout(() => { toast.style.opacity = '0'; }, 2000);
+        }
+
+        // --- MediaPipe 臉部偵測設定 ---
+        function initFaceDetection() {
+            faceDetection = new FaceDetection({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}`
+            });
+
+            faceDetection.setOptions({
+                model: 'short', // 'short' 適合近距離/手機前鏡頭，'full' 適合全景/後鏡頭遠距
+                minDetectionConfidence: 0.45 // 調低信心度以利抓取側面
+            });
+
+            faceDetection.onResults(onResults);
+        }
+
+        // 歷史頭部位置快取（用於轉到背面、完全偵測不到人臉時的「視覺平滑推估補償機制」）
+        let lastKnownHead = null;
+        let lostDetectionFrames = 0;
+
+        function onResults(results) {
+            // 動態調整畫布尺寸以符合視訊源
+            if (canvasElement.width !== results.image.width) {
+                canvasElement.width = results.image.width;
+                canvasElement.height = results.image.height;
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 繪製原始影像
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (isMaskActive) {
+                let headDetected = false;
+
+                if (results.detections && results.detections.length > 0) {
+                    const detection = results.detections[0]; // 追蹤主要對象
+                    const boundingBox = detection.boundingBox;
+                    
+                    // 計算絕對像素座標與尺寸
+                    const width = boundingBox.width * canvasElement.width;
+                    const height = boundingBox.height * canvasElement.height;
+                    const x = boundingBox.xCenter * canvasElement.width - width / 2;
+                    const y = boundingBox.yCenter * canvasElement.height - height / 2;
+
+                    // 加大覆蓋範圍以防側臉邊緣外露
+                    const paddingFactor = 1.6; 
+                    const maskW = width * paddingFactor;
+                    const maskH = height * paddingFactor;
+                    const maskX = x - (maskW - width) / 2;
+                    const maskY = y - (maskH - height) / 1.5; // 稍微往上提覆蓋頭頂
+
+                    lastKnownHead = { x: maskX, y: maskY, w: maskW, h: maskH };
+                    lostDetectionFrames = 0;
+                    headDetected = true;
+
+                    canvasCtx.drawImage(catImage, maskX, maskY, maskW, maskH);
+                } 
+                
+                // 【背面/側身完全盲區補償】如果突然偵測不到（例如轉到背面），使用最後已知位置與尺寸進行短期追蹤遮蔽
+                if (!headDetected && lastKnownHead && lostDetectionFrames < 45) {
+                    lostDetectionFrames++;
+                    // 讓遮蔽盒在原地並微微放大，防止背面轉動時溢出
+                    const motionBuffer = 1.05;
+                    canvasCtx.drawImage(
+                        catImage, 
+                        lastKnownHead.x - (lastKnownHead.w * (motionBuffer - 1))/2, 
+                        lastKnownHead.y, 
+                        lastKnownHead.w * motionBuffer, 
+                        lastKnownHead.h * motionBuffer
+                    );
+                } else if (!headDetected && lostDetectionFrames >= 45) {
+                    lastKnownHead = null; // 遺失過久，清除狀態
+                }
+            }
+
+            canvasCtx.restore();
+        }
+
+        // --- 相機啟動（指定強制後鏡頭） ---
+        function startCamera() {
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await faceDetection.send({ image: videoElement });
+                },
+                width: 1280,
+                height: 720,
+                facingMode: 'environment' // 強制開啟後置鏡頭
+            });
+            camera.start().catch(err => {
+                alert("無法開啟後鏡頭，請確認是否給予相機權限：" + err);
+            });
+        }
+
+        // --- 互動功能事件 ---
+
+        // 1. 遮蔽模式切換
+        maskBtn.addEventListener('click', () => {
+            isMaskActive = !isMaskActive;
+            if (isMaskActive) {
+                maskBtn.classList.add('active');
+                maskBtn.querySelector('span').innerText = "遮蔽: 開";
+            } else {
+                maskBtn.classList.remove('active');
+                maskBtn.querySelector('span').innerText = "遮蔽: 關";
+            }
+        });
+
+        // 2. 拍照功能
+        captureBtn.addEventListener('click', () => {
+            try {
+                // 從正在渲染遮蔽效果的 Canvas 直接擷取圖片
+                const dataUrl = canvasElement.toDataURL('image/jpeg', 0.9);
+                
+                // 建立下載連結
+                const link = document.createElement('a');
+                link.download = `Photo_${Date.now()}.jpg`;
+                link.href = dataUrl;
+                link.click();
+
+                // 快取管理：記錄產生的 DataURL 供後續釋放
+                generatedUrls.push(dataUrl);
+                showToast("照片已儲存");
+
+                // 防止潛在堆積，若快取物件超過 30 個自動執行微釋放
+                if (generatedUrls.length > 30) {
+                    clearMemoryCache();
+                }
+            } catch (e) {
+                showToast("拍照失敗");
+                console.error(e);
+            }
+        });
+
+        // 3. 錄影功能 (整合 Canvas 串流)
+        recordBtn.addEventListener('click', () => {
+            if (!isRecording) {
+                // 開始錄影
+                recordedChunks = [];
+                // 擷取 Canvas 的即時影像串流 (30 fps)
+                const stream = canvasElement.captureStream(30);
+                
+                // 嘗試採用常見的手機支援編碼格式
+                let options = { mimeType: 'video/webm;codecs=vp9' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options = { mimeType: 'video/webm' };
+                }
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options = { mimeType: 'video/mp4' }; // iOS 設備支援
+                }
+
+                try {
+                    mediaRecorder = new MediaRecorder(stream, options);
+                } catch (e) {
+                    mediaRecorder = new MediaRecorder(stream); // 預設系統格式
+                }
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) {
+                        recordedChunks.push(e.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType });
+                    const videoUrl = URL.createObjectURL(blob);
+                    
+                    const link = document.createElement('a');
+                    link.download = `Video_${Date.now()}.mp4`;
+                    link.href = videoUrl;
+                    link.click();
+
+                    // 將產生的 ObjectURL 存入快取追蹤名單
+                    generatedUrls.push(videoUrl);
+                    showToast("影片已儲存");
+                };
+
+                mediaRecorder.start(1000); // 每 1 秒打包一次區塊，安全省電
+                isRecording = true;
+                recordBtn.classList.add('active');
+                recordBtn.querySelector('span').innerText = "停止";
+                showToast("錄影中...");
+            } else {
+                // 停止錄影
+                mediaRecorder.stop();
+                isRecording = false;
+                recordBtn.classList.remove('active');
+                recordBtn.querySelector('span').innerText = "錄影";
+            }
+        });
+
+        // 4. 強制清除快取與記憶體釋放機制
+        function clearMemoryCache() {
+            if (generatedUrls.length === 0) {
+                showToast("快取目前是空的");
+                return;
+            }
+
+            let releaseCount = 0;
+            generatedUrls.forEach(url => {
+                if (url.startsWith('blob:')) {
+                    URL.revokeObjectURL(url); // 釋放瀏覽器內存 Blob 指標
+                    releaseCount++;
+                }
+            });
+
+            // 清空陣列與解綁變數參考，促使 JavaScript V8 引擎回收記憶體(Garbage Collection)
+            generatedUrls = []; 
+            
+            // 主動調小垃圾回收機會：重置畫布緩衝區大小
+            const currentW = canvasElement.width;
+            canvasElement.width = currentW; 
+
+            showToast(`已釋放 ${releaseCount} 個核心影音暫存快取`);
+        }
+
+        clearBtn.addEventListener('click', clearMemoryCache);
+
+        // --- 初始化啟動 ---
+        window.onload = () => {
+            initFaceDetection();
+            startCamera();
+        };
+    </script>
+</body>
+</html>
