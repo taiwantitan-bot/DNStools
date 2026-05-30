@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>DNS單人隱私工具 v6</title>
+    <title>DNS單人隱私工具 v7</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -147,33 +147,35 @@
 
         // 初始化 MediaPipe Pose
         async function initPoseDetection() {
-            statusDisplay.innerText = "正在初始化全身骨架辨識模組...";
+            statusDisplay.innerText = "正在初始化後鏡頭與辨識模組...";
             
             pose = new Pose({
                 locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
             });
 
             pose.setOptions({
-                modelComplexity: 1,      // 1 兼顧速度與精準度，適合手機
-                smoothLandmarks: true,   // 平滑骨架，防止貓頭抖動
+                modelComplexity: 1,      
+                smoothLandmarks: true,   
                 minDetectionConfidence: 0.5,
                 minTrackingConfidence: 0.5
             });
 
             pose.onResults(onPoseResults);
 
+            // 【重大修正】強制設定使用手機後鏡頭 (environment)
             camera = new Camera(video, {
                 onFrame: async () => {
                     await pose.send({ image: video });
                 },
                 width: 1280,
-                height: 720
+                height: 720,
+                facingMode: "environment" // 強制調用後鏡頭
             });
             
             camera.start()
-                .then(() => statusDisplay.innerText = "就緒。正面、側面、背面皆可精準遮蔽")
+                .then(() => statusDisplay.innerText = "後鏡頭就緒。正面、側面、背面皆可辨識")
                 .catch(err => {
-                    statusDisplay.innerText = "無法開啟相機，請檢查權限";
+                    statusDisplay.innerText = "無法開啟後鏡頭，請檢查 HTTPS 或權限";
                     console.error(err);
                 });
         }
@@ -193,57 +195,53 @@
             if (isMasked && results.poseLandmarks) {
                 const landmarks = results.poseLandmarks;
 
-                // 抓取關鍵點 (MediaPipe Pose 節點索引)
-                // 0:鼻尖, 7:左耳, 8:右耳, 11:左肩, 12:右肩
                 const nose = landmarks[0];
                 const leftEar = landmarks[7];
                 const rightEar = landmarks[8];
                 const leftShoulder = landmarks[11];
                 const rightShoulder = landmarks[12];
 
-                // 1. 動態計算頭部直徑：利用兩肩寬度的一半作為基準，這樣站遠站近都會自動按比例縮放
+                // 動態計算頭部直徑：利用兩肩寬度的一半作為基準
                 const shoulderWidth = Math.hypot(
                     (leftShoulder.x - rightShoulder.x) * canvasPreview.width,
                     (leftShoulder.y - rightShoulder.y) * canvasPreview.height
                 );
                 
-                // 貓頭大小：設定為肩寬的 0.85 倍，剛好可以完美遮頭又不壓肩
+                // 貓頭大小：肩寬的 0.85 倍
                 const maskSize = shoulderWidth * 0.85;
 
-                // 2. 決定頭部中心點 (X, Y)
                 let headX, headY;
 
-                // 如果是正面/側面（能看見耳朵或鼻子）
+                // 判斷正面/側面或背面
                 if (nose.visibility > 0.5 || leftEar.visibility > 0.5 || rightEar.visibility > 0.5) {
-                    // 用兩耳中點或鼻尖來當頭部中心
                     headX = ((leftEar.x + rightEar.x) / 2) * canvasPreview.width;
                     headY = ((leftEar.y + rightEar.y) / 2) * canvasPreview.height;
                     
-                    // 如果耳朵因轉向不明顯，用鼻尖微調
                     if (nose.visibility > 0.5 && Math.abs(headX - nose.x * canvasPreview.width) > maskSize) {
                         headX = nose.x * canvasPreview.width;
                         headY = nose.y * canvasPreview.height;
                     }
                 } else {
-                    // 【關鍵：背面模式】如果完全看不到五官，利用兩肩中點往上推算頭部位置
+                    // 背面模式：利用兩肩中點往上推算頭部位置
                     const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2 * canvasPreview.width;
                     const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2 * canvasPreview.height;
                     
                     headX = shoulderCenterX;
-                    // 根據肩寬比例，頭心大約在兩肩中點往上 0.6 倍肩寬的位置
-                    headY = shoulderCenterY - (shoulderWidth * 0.6);
+                    headY = shoulderCenterY - (shoulderWidth * 0.55); // 稍微往下一點點更符合真實背面頭心
                 }
 
-                // 3. 安全防線：確保貓咪頭下緣絕對不低於兩肩的最高點（避免壓到 DNS 需要觀察的肩膀線條）
-                const highestShoulderY = ( Math.min(leftShoulder.y, rightShoulder.y) * canvasPreview.height ) + 50;
+                // 取得兩肩最高點的 Y 軸像素座標
+                const highestShoulderY = Math.min(leftShoulder.y, rightShoulder.y) * canvasPreview.height;
                 
                 // 計算貓咪頭左上角的繪製起點
                 const maskX = headX - (maskSize / 2);
-                let maskY = headY - (maskSize / 2) - (maskSize * 0.1); // 微往上提
+                let maskY = headY - (maskSize / 2);
 
-                // 強制鎖定：如果貓頭下緣低於肩膀，就強行往上抬
-                if ((maskY + maskSize) > highestShoulderY) {
-                    maskY = highestShoulderY - maskSize - 5; // 留 5 像素安全微隙
+                // 【調整防護機制】允許貓咪頭下緣「略低於」肩膀最高點（容許 maskSize 的 15% 覆蓋脖子與鎖骨）
+                const maxAllowedY = highestShoulderY + (maskSize * 0.15);
+                
+                if ((maskY + maskSize) > maxAllowedY) {
+                    maskY = maxAllowedY - maskSize;
                 }
 
                 // 繪製貓頭
