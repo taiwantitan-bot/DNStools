@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>DNS單人隱私工具 v6</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            height: 100vh;
+            height: 100dvh; 
+            overflow: hidden;
+            position: relative;
+        }
+        .camera-container {
+            position: relative;
+            width: 100%;
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+            overflow: hidden;
+        }
+        video {
+            display: none; 
+        }
+        canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        .control-panel {
+            width: 100%;
+            padding: 12px 15px env(safe-area-inset-bottom);
+            background-color: rgba(30, 30, 30, 0.95);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            border-top: 1px solid #333;
+            z-index: 10;
+        }
+        .btn-group {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        button {
+            flex: 1;
+            padding: 14px 8px;
+            font-size: 0.95rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+            -webkit-tap-highlight-color: transparent;
+        }
+        #btn-mask {
+            background-color: #555;
+            color: white;
+        }
+        #btn-mask.active {
+            background-color: #4caf50;
+        }
+        #btn-capture {
+            background-color: #007aff;
+            color: white;
+            flex: 1.3; 
+        }
+        #btn-clear {
+            background-color: #ff3b30;
+            color: white;
+        }
+        button:active {
+            opacity: 0.8;
+        }
+        .status-text {
+            text-align: center;
+            font-size: 0.8rem;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="camera-container">
+        <video id="video" playsinline></video>
+        <canvas id="canvas-preview"></canvas>
+    </div>
+
+    <div class="control-panel">
+        <div class="btn-group">
+            <button id="btn-mask">遮蔽: 關</button>
+            <button id="btn-capture">拍照</button>
+            <button id="btn-clear">清除快取</button>
+        </div>
+        <div class="status-text" id="status-display">系統準備中...</div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvasPreview = document.getElementById('canvas-preview');
+        const ctxPreview = canvasPreview.getContext('2d');
+        
+        const btnMask = document.getElementById('btn-mask');
+        const btnCapture = document.getElementById('btn-capture');
+        const btnClear = document.getElementById('btn-clear');
+        const statusDisplay = document.getElementById('status-display');
+
+        let isMasked = false;
+        let pose = null;
+        let camera = null;
+
+        // 貓咪頭像 SVG DataURL
+        const catSvg = `
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+                <circle cx="50" cy="55" r="40" fill="#fbc02d"/>
+                <polygon points="15,25 35,40 15,45" fill="#fbc02d"/>
+                <polygon points="15,25 25,35 15,45" fill="#f57f17"/>
+                <polygon points="85,25 65,40 85,45" fill="#fbc02d"/>
+                <polygon points="85,25 75,35 85,45" fill="#f57f17"/>
+                <circle cx="35" cy="50" r="5" fill="#000"/>
+                <circle cx="65" cy="50" r="5" fill="#000"/>
+                <polygon points="50,60 45,55 55,55" fill="#e91e63"/>
+                <path d="M 40,68 Q 45,73 50,68 Q 55,73 60,68" stroke="#000" stroke-width="3" fill="none"/>
+                <path d="M 25,60 L 5,58 M 25,63 L 5,65 M 75,60 L 95,58 M 75,63 L 95,65" stroke="#000" stroke-width="2"/>
+            </svg>
+        `;
+        const catImage = new Image();
+        catImage.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(catSvg);
+
+        // 初始化 MediaPipe Pose
+        async function initPoseDetection() {
+            statusDisplay.innerText = "正在初始化全身骨架辨識模組...";
+            
+            pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+
+            pose.setOptions({
+                modelComplexity: 1,      // 1 兼顧速度與精準度，適合手機
+                smoothLandmarks: true,   // 平滑骨架，防止貓頭抖動
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            pose.onResults(onPoseResults);
+
+            camera = new Camera(video, {
+                onFrame: async () => {
+                    await pose.send({ image: video });
+                },
+                width: 1280,
+                height: 720
+            });
+            
+            camera.start()
+                .then(() => statusDisplay.innerText = "就緒。正面、側面、背面皆可精準遮蔽")
+                .catch(err => {
+                    statusDisplay.innerText = "無法開啟相機，請檢查權限";
+                    console.error(err);
+                });
+        }
+
+        function onPoseResults(results) {
+            if (!results.image) return;
+
+            if (canvasPreview.width !== results.image.width || canvasPreview.height !== results.image.height) {
+                canvasPreview.width = results.image.width;
+                canvasPreview.height = results.image.height;
+            }
+
+            // 繪製原始相機畫面
+            ctxPreview.drawImage(results.image, 0, 0, canvasPreview.width, canvasPreview.height);
+
+            // 如果開啟遮蔽且有抓到人體骨架
+            if (isMasked && results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+
+                // 抓取關鍵點 (MediaPipe Pose 節點索引)
+                // 0:鼻尖, 7:左耳, 8:右耳, 11:左肩, 12:右肩
+                const nose = landmarks[0];
+                const leftEar = landmarks[7];
+                const rightEar = landmarks[8];
+                const leftShoulder = landmarks[11];
+                const rightShoulder = landmarks[12];
+
+                // 1. 動態計算頭部直徑：利用兩肩寬度的一半作為基準，這樣站遠站近都會自動按比例縮放
+                const shoulderWidth = Math.hypot(
+                    (leftShoulder.x - rightShoulder.x) * canvasPreview.width,
+                    (leftShoulder.y - rightShoulder.y) * canvasPreview.height
+                );
+                
+                // 貓頭大小：設定為肩寬的 0.85 倍，剛好可以完美遮頭又不壓肩
+                const maskSize = shoulderWidth * 0.85;
+
+                // 2. 決定頭部中心點 (X, Y)
+                let headX, headY;
+
+                // 如果是正面/側面（能看見耳朵或鼻子）
+                if (nose.visibility > 0.5 || leftEar.visibility > 0.5 || rightEar.visibility > 0.5) {
+                    // 用兩耳中點或鼻尖來當頭部中心
+                    headX = ((leftEar.x + rightEar.x) / 2) * canvasPreview.width;
+                    headY = ((leftEar.y + rightEar.y) / 2) * canvasPreview.height;
+                    
+                    // 如果耳朵因轉向不明顯，用鼻尖微調
+                    if (nose.visibility > 0.5 && Math.abs(headX - nose.x * canvasPreview.width) > maskSize) {
+                        headX = nose.x * canvasPreview.width;
+                        headY = nose.y * canvasPreview.height;
+                    }
+                } else {
+                    // 【關鍵：背面模式】如果完全看不到五官，利用兩肩中點往上推算頭部位置
+                    const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2 * canvasPreview.width;
+                    const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2 * canvasPreview.height;
+                    
+                    headX = shoulderCenterX;
+                    // 根據肩寬比例，頭心大約在兩肩中點往上 0.6 倍肩寬的位置
+                    headY = shoulderCenterY - (shoulderWidth * 0.6);
+                }
+
+                // 3. 安全防線：確保貓咪頭下緣絕對不低於兩肩的最高點（避免壓到 DNS 需要觀察的肩膀線條）
+                const highestShoulderY = Math.min(leftShoulder.y, rightShoulder.y) * canvasPreview.height;
+                
+                // 計算貓咪頭左上角的繪製起點
+                const maskX = headX - (maskSize / 2);
+                let maskY = headY - (maskSize / 2) - (maskSize * 0.1); // 微往上提
+
+                // 強制鎖定：如果貓頭下緣低於肩膀，就強行往上抬
+                if ((maskY + maskSize) > highestShoulderY) {
+                    maskY = highestShoulderY - maskSize - 5; // 留 5 像素安全微隙
+                }
+
+                // 繪製貓頭
+                ctxPreview.drawImage(catImage, maskX, maskY, maskSize, maskSize);
+            }
+        }
+
+        btnMask.addEventListener('click', () => {
+            isMasked = !isMasked;
+            if (isMasked) {
+                btnMask.innerText = "遮蔽: 開";
+                btnMask.classList.add('active');
+            } else {
+                btnMask.innerText = "遮蔽: 關";
+                btnMask.classList.remove('active');
+            }
+        });
+
+        btnCapture.addEventListener('click', () => {
+            statusDisplay.innerText = "正在處理照片儲存...";
+            const downloadLink = document.createElement('a');
+            const dataUrl = canvasPreview.toDataURL('image/jpeg', 0.9);
+            
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            downloadLink.download = `DNS_${timestamp}.jpg`;
+            downloadLink.href = dataUrl;
+            downloadLink.click();
+
+            statusDisplay.innerText = "照片已匯出！";
+
+            setTimeout(() => {
+                downloadLink.remove();
+            }, 100);
+        });
+
+        btnClear.addEventListener('click', () => {
+            statusDisplay.innerText = "正在重整釋放記憶體...";
+            try {
+                if ('caches' in window) {
+                    caches.keys().then(names => {
+                        names.forEach(name => caches.delete(name));
+                    });
+                }
+                canvasPreview.width = 1;
+                canvasPreview.height = 1;
+                ctxPreview.clearRect(0, 0, 1, 1);
+                
+                setTimeout(() => {
+                    window.location.reload();
+                }, 500);
+            } catch (error) {
+                window.location.reload();
+            }
+        });
+
+        window.onload = initPoseDetection;
+    </script>
+</body>
+</html>
