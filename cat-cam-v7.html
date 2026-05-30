@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>DNS單人隱私工具 v8</title>
+    <title>DNS單人隱私工具 v10</title>
     
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -45,32 +45,56 @@
             max-height: 100%;
             object-fit: contain;
         }
-        /* 歷史照片預覽列（新增） */
+        /* 暫存預覽與批次下載列 */
         .gallery-container {
             width: 100%;
-            height: 90px;
+            height: 95px;
             background-color: #1a1a1a;
             display: flex;
             gap: 10px;
             padding: 8px 15px;
-            overflow-x: auto;
             align-items: center;
             border-top: 1px solid #2a2a2a;
+            justify-content: space-between;
+        }
+        .thumbnails-box {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            flex: 1;
+            height: 100%;
+            align-items: center;
         }
         .gallery-item {
             height: 100%;
             aspect-ratio: 3/4;
             background-color: #333;
             border-radius: 4px;
-            object-fit: cover;
             border: 1px solid #555;
-            position: relative;
+            flex-shrink: 0;
         }
         .gallery-item img {
             width: 100%;
             height: 100%;
             object-fit: cover;
             border-radius: 4px;
+        }
+        /* 全部下載按鈕（直接輸出圖片檔） */
+        #btn-download-all {
+            height: 100%;
+            padding: 0 15px;
+            background-color: #34c759;
+            color: white;
+            font-size: 0.9rem;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            display: none; /* 有照片時才會顯示 */
+            align-items: center;
+            justify-content: center;
+            white-space: nowrap;
+            box-shadow: 0 0 10px rgba(52, 199, 89, 0.3);
         }
         /* 控制面板 */
         .control-panel {
@@ -132,8 +156,10 @@
         <canvas id="canvas-preview"></canvas>
     </div>
 
-    <div class="gallery-container" id="gallery">
-        </div>
+    <div class="gallery-container">
+        <div class="thumbnails-box" id="thumbnails-box"></div>
+        <button id="btn-download-all">全部下載<br>(直存相簿)</button>
+    </div>
 
     <div class="control-panel">
         <div class="btn-group">
@@ -152,116 +178,68 @@
         const btnMask = document.getElementById('btn-mask');
         const btnCapture = document.getElementById('btn-capture');
         const btnClear = document.getElementById('btn-clear');
+        const btnDownloadAll = document.getElementById('btn-download-all');
+        const thumbnailsBox = document.getElementById('thumbnails-box');
         const statusDisplay = document.getElementById('status-display');
-        const gallery = document.getElementById('gallery');
 
         let isMasked = false;
         let pose = null;
         let camera = null;
-        let capturedPhotos = []; // 儲存照片的陣列
+        
+        // 儲存當前受測者的照片數據
+        let localPhotos = []; 
 
-        // 貓咪頭像 SVG DataURL
-        const catSvg = `
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-                <circle cx="50" cy="55" r="40" fill="#fbc02d"/>
-                <polygon points="15,25 35,40 15,45" fill="#fbc02d"/>
-                <polygon points="15,25 25,35 15,45" fill="#f57f17"/>
-                <polygon points="85,25 65,40 85,45" fill="#fbc02d"/>
-                <polygon points="85,25 75,35 85,45" fill="#f57f17"/>
-                <circle cx="35" cy="50" r="5" fill="#000"/>
-                <circle cx="65" cy="50" r="5" fill="#000"/>
-                <polygon points="50,60 45,55 55,55" fill="#e91e63"/>
-                <path d="M 40,68 Q 45,73 50,68 Q 55,73 60,68" stroke="#000" stroke-width="3" fill="none"/>
-                <path d="M 25,60 L 5,58 M 25,63 L 5,65 M 75,60 L 95,58 M 75,63 L 95,65" stroke="#000" stroke-width="2"/>
-            </svg>
-        `;
+        const catSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="55" r="40" fill="#fbc02d"/><polygon points="15,25 35,40 15,45" fill="#fbc02d"/><polygon points="15,25 25,35 15,45" fill="#f57f17"/><polygon points="85,25 65,40 85,45" fill="#fbc02d"/><polygon points="85,25 75,35 85,45" fill="#f57f17"/><circle cx="35" cy="50" r="5" fill="#000"/><circle cx="65" cy="50" r="5" fill="#000"/><polygon points="50,60 45,55 55,55" fill="#e91e63"/><path d="M 40,68 Q 45,73 50,68 Q 55,73 60,68" stroke="#000" stroke-width="3" fill="none"/><path d="M 25,60 L 5,58 M 25,63 L 5,65 M 75,60 L 95,58 M 75,63 L 95,65" stroke="#000" stroke-width="2"/></svg>`;
         const catImage = new Image();
         catImage.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(catSvg);
 
-        // 初始化 MediaPipe Pose
         async function initPoseDetection() {
             statusDisplay.innerText = "正在初始化後鏡頭與辨識模組...";
-            
-            pose = new Pose({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-            });
-
-            pose.setOptions({
-                modelComplexity: 1,      
-                smoothLandmarks: true,   
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
-            });
-
+            pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
+            pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
             pose.onResults(onPoseResults);
 
             camera = new Camera(video, {
-                onFrame: async () => {
-                    await pose.send({ image: video });
-                },
-                width: 1280,
-                height: 720,
-                facingMode: "environment"
+                onFrame: async () => { await pose.send({ image: video }); },
+                width: 1280, height: 720, facingMode: "environment"
             });
             
             camera.start()
-                .then(() => statusDisplay.innerText = "後鏡頭就緒。拍完照可於下方點擊/長按儲存")
-                .catch(err => {
-                    statusDisplay.innerText = "無法開啟後鏡頭，請檢查 HTTPS 或權限";
-                    console.error(err);
-                });
+                .then(() => statusDisplay.innerText = "就緒。請依序連拍四個方向（可在下方即時觀看圖片）")
+                .catch(err => { statusDisplay.innerText = "無法開啟鏡頭，請檢查權限"; });
         }
 
         function onPoseResults(results) {
             if (!results.image) return;
-
             if (canvasPreview.width !== results.image.width || canvasPreview.height !== results.image.height) {
                 canvasPreview.width = results.image.width;
                 canvasPreview.height = results.image.height;
             }
-
             ctxPreview.drawImage(results.image, 0, 0, canvasPreview.width, canvasPreview.height);
 
             if (isMasked && results.poseLandmarks) {
                 const landmarks = results.poseLandmarks;
-
-                const nose = landmarks[0];
-                const leftEar = landmarks[7];
-                const rightEar = landmarks[8];
-                const leftShoulder = landmarks[11];
-                const rightShoulder = landmarks[12];
-
-                const shoulderWidth = Math.hypot(
-                    (leftShoulder.x - rightShoulder.x) * canvasPreview.width,
-                    (leftShoulder.y - rightShoulder.y) * canvasPreview.height
-                );
-                
+                const nose = landmarks[0], leftEar = landmarks[7], rightEar = landmarks[8], leftShoulder = landmarks[11], rightShoulder = landmarks[12];
+                const shoulderWidth = Math.hypot((leftShoulder.x - rightShoulder.x) * canvasPreview.width, (leftShoulder.y - rightShoulder.y) * canvasPreview.height);
                 const maskSize = shoulderWidth * 0.85;
                 let headX, headY;
 
                 if (nose.visibility > 0.5 || leftEar.visibility > 0.5 || rightEar.visibility > 0.5) {
                     headX = ((leftEar.x + rightEar.x) / 2) * canvasPreview.width;
                     headY = ((leftEar.y + rightEar.y) / 2) * canvasPreview.height;
-                    
                     if (nose.visibility > 0.5 && Math.abs(headX - nose.x * canvasPreview.width) > maskSize) {
-                        headX = nose.x * canvasPreview.width;
-                        headY = nose.y * canvasPreview.height;
+                        headX = nose.x * canvasPreview.width; headY = nose.y * canvasPreview.height;
                     }
                 } else {
-                    const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2 * canvasPreview.width;
-                    const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2 * canvasPreview.height;
-                    headX = shoulderCenterX;
-                    headY = shoulderCenterY - (shoulderWidth * 0.55);
+                    headX = (leftShoulder.x + rightShoulder.x) / 2 * canvasPreview.width;
+                    headY = ((leftShoulder.y + rightShoulder.y) / 2 * canvasPreview.height) - (shoulderWidth * 0.55);
                 }
 
                 const highestShoulderY = Math.min(leftShoulder.y, rightShoulder.y) * canvasPreview.height;
                 const maskX = headX - (maskSize / 2);
                 let maskY = headY - (maskSize / 2);
-
                 const maxAllowedY = highestShoulderY + (maskSize * 0.15);
-                if ((maskY + maskSize) > maxAllowedY) {
-                    maskY = maxAllowedY - maskSize;
-                }
+                if ((maskY + maskSize) > maxAllowedY) { maskY = maxAllowedY - maskSize; }
 
                 ctxPreview.drawImage(catImage, maskX, maskY, maskSize, maskSize);
             }
@@ -269,78 +247,78 @@
 
         btnMask.addEventListener('click', () => {
             isMasked = !isMasked;
-            if (isMasked) {
-                btnMask.innerText = "遮蔽: 開";
-                btnMask.classList.add('active');
-            } else {
-                btnMask.innerText = "遮蔽: 關";
-                btnMask.classList.remove('active');
-            }
+            btnMask.innerText = isMasked ? "遮蔽: 開" : "遮蔽: 關";
+            btnMask.className = isMasked ? "active" : "";
         });
 
-        // 【優化拍照流程】按下拍照時直接進暫存區，不跳出下載彈窗
+        // 1. 拍照按鈕：純暫存，下方即時顯示大縮圖，方便當下檢查
         btnCapture.addEventListener('click', () => {
-            // 擷取當前畫面
-            const dataUrl = canvasPreview.toDataURL('image/jpeg', 0.9);
-            const timestamp = new Date().toLocaleTimeString();
+            const dataUrl = canvasPreview.toDataURL('image/jpeg', 0.85); 
+            localPhotos.push(dataUrl);
 
-            // 建立下方縮圖元素
+            // 產生即時預覽縮圖
             const wrapper = document.createElement('div');
             wrapper.className = 'gallery-item';
-            
-            // 點擊縮圖才會觸發真正的下載提示，或是讓使用者在手機上「長按圖片」直接儲存到相簿
             const img = document.createElement('img');
             img.src = dataUrl;
-            img.alt = `DNS Photo ${timestamp}`;
-            
-            // 下載連結封裝在圖片點擊事件上
-            wrapper.addEventListener('click', () => {
-                const downloadLink = document.createElement('a');
-                const fileDate = new Date().toISOString().replace(/[:.]/g, '-');
-                downloadLink.download = `DNS_${fileDate}.jpg`;
-                downloadLink.href = dataUrl;
-                downloadLink.click();
-                downloadLink.remove();
-            });
-
             wrapper.appendChild(img);
-            
-            // 放到預覽列的最前面
-            if (gallery.firstChild) {
-                gallery.insertBefore(wrapper, gallery.firstChild);
-            } else {
-                gallery.appendChild(wrapper);
+            thumbnailsBox.appendChild(wrapper);
+
+            // 鏡頭拍完自動將預覽列滾動到最新照片
+            thumbnailsBox.scrollLeft = thumbnailsBox.scrollWidth;
+
+            // 顯示「全部下載」按鈕
+            if (localPhotos.length > 0) {
+                btnDownloadAll.style.display = 'flex';
             }
 
-            // 自動橫向滾動到最新的一張
-            gallery.scrollLeft = 0;
-
-            const count = gallery.children.length;
-            statusDisplay.innerText = `已暫存第 ${count} 張照片。拍完可點擊/長按下方縮圖儲存`;
+            statusDisplay.innerText = `已拍攝 ${localPhotos.length} 個方向，可在下方即時點檢圖片`;
         });
 
-        // 清除快取：順便清空暫存區
-        btnClear.addEventListener('click', () => {
-            statusDisplay.innerText = "正在清除快取與暫存照片...";
-            try {
-                if ('caches' in window) {
-                    caches.keys().then(names => {
-                        names.forEach(name => caches.delete(name));
-                    });
-                }
-                
-                // 清空暫存 HTML 節點與記憶體
-                gallery.innerHTML = '';
-                canvasPreview.width = 1;
-                canvasPreview.height = 1;
-                ctxPreview.clearRect(0, 0, 1, 1);
-                
+        // 2. 全部下載按鈕：直接批次導出圖片檔，不打包 ZIP，並在下載後自動清除
+        btnDownloadAll.addEventListener('click', () => {
+            if (localPhotos.length === 0) return;
+
+            statusDisplay.innerText = "正在批次匯出圖片，請連續確認儲存提示...";
+            
+            const directions = ["1_正面", "2_左側", "3_右側", "4_背面"];
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(11, 19);
+
+            // 利用時差依序觸發標準圖片下載
+            localPhotos.forEach((dataUrl, index) => {
                 setTimeout(() => {
-                    window.location.reload();
-                }, 500);
-            } catch (error) {
-                window.location.reload();
+                    const downloadLink = document.createElement('a');
+                    const prefix = index < directions.length ? directions[index] : `${index + 1}_額外照片`;
+                    
+                    downloadLink.download = `DNS_${prefix}_${timestamp}.jpg`;
+                    downloadLink.href = dataUrl;
+                    document.body.appendChild(downloadLink);
+                    downloadLink.click();
+                    
+                    // 釋放節點
+                    document.body.removeChild(downloadLink);
+                }, index * 250); // 每張隔 250 毫秒，防止瀏覽器阻擋多重下載
+            });
+
+            // 下載完成後，立馬清空，防止下一位受測者重複下載舊照片
+            setTimeout(() => {
+                localPhotos = [];
+                thumbnailsBox.innerHTML = '';
+                btnDownloadAll.style.display = 'none';
+                statusDisplay.innerText = "匯出完成！已自動重置暫存區。";
+            }, localPhotos.length * 260);
+        });
+
+        // 完全重置
+        btnClear.addEventListener('click', () => {
+            statusDisplay.innerText = "重置中...";
+            localPhotos = [];
+            thumbnailsBox.innerHTML = '';
+            if ('caches' in window) {
+                caches.keys().then(names => { names.forEach(name => caches.delete(name)); });
             }
+            canvasPreview.width = 1; canvasPreview.height = 1;
+            setTimeout(() => { window.location.reload(); }, 300);
         });
 
         window.onload = initPoseDetection;
